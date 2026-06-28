@@ -85,6 +85,6 @@ jobs:
         fail-on-empty-changeset: false
         capabilities: CAPABILITY_NAMED_IAM
         parameter-overrides: >-
-          ProjectName=${{needs.prepare.outputs.project_name}} }},
+          ProjectName=${{ needs.prepare.outputs.project_name }},
           RoleName=${{ needs.prepare.outputs.project_name }}-lambda-execution
         tags: '[{"Key":"Project","Value":"${{ needs.prepare.outputs.project_name }}"}]'
