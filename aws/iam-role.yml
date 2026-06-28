@@ -1,0 +1,33 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: IAM role for the consumer Lambda function
+
+Parameters:
+  ProjectName:
+    Type: String
+    Description: Name of the project
+  RoleName:
+    Type: String
+    Description: Name of the IAM role for the consumer Lambda function
+
+Outputs:
+  LambdaExecutionRoleArn:
+    Description: ARN of the consumer Lambda execution role
+    Value: !GetAtt LambdaExecutionRole.Arn
+
+Resources:
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref RoleName
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName

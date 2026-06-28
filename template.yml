@@ -1,0 +1,38 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Serverless application with consumer (SQS subscriber) Lambda function
+
+Parameters:
+  AppTagValue:
+    Type: String
+    Description: Tag value for the application
+  FunctionName:
+    Type: String
+    Description: Name of the consumer Lambda function
+  LambdaExecutionRoleArn:
+    Type: String
+    Description: ARN of the existing IAM role for the consumer Lambda execution
+
+Outputs:
+  FunctionArn:
+    Description: ARN of the consumer Lambda function
+    Value: !GetAtt Function.Arn
+
+  FunctionName:
+    Description: Name of the consumer Lambda function
+    Value: !Ref Function
+
+Resources:
+  Function:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Ref FunctionName
+      Runtime: python3.14
+      Handler: app.main.handler
+      CodeUri: lambda.zip
+      Role: !Ref LambdaExecutionRoleArn
+      Timeout: 300
+      MemorySize: 128
+      Tags:
+        awsApplication: !Ref AppTagValue
+

@@ -1,0 +1,90 @@
+name: Main
+run-name: Build & deploy 🚀
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PROJECT_NAME: cloudwatch-to-newrelic
+
+permissions:
+  id-token: write # REQUIRED for OIDC
+  contents: read
+
+jobs:
+  prepare:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      project_name: ${{ steps.vars.outputs.project_name }}
+      jwt_issuer: ${{ steps.vars.outputs.JWT_ISSUER }}
+      jwt_audience: ${{ steps.vars.outputs.JWT_AUDIENCE }}
+    steps:
+      - id: vars
+        run: |
+          echo "project_name=${{ env.PROJECT_NAME }}" >> "$GITHUB_OUTPUT"
+
+  build-lambda-zip:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v7
+
+    - name: Build lambda package
+      run: |
+        make build-lambda-package
+
+    - name: Upload Lambda ZIP artifact
+      uses: actions/upload-artifact@v7
+      with:
+        name: lambda-zip
+        path: lambda.zip
+
+  cfn-lint:
+    name: CloudFormation Lint
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v7
+
+    - name: Run cfn-lint
+      run: make cfn-lint
+
+  deploy-stacks:
+    needs:
+      - prepare
+      - build-lambda-zip
+      - cfn-lint
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
+      with:
+        role-to-assume: ${{ secrets.DEPLOY_ROLE_ARN }}
+        aws-region: eu-central-1
+
+    - name: iam-role stack
+      id: iam-role
+      uses: aws-actions/aws-cloudformation-github-deploy@81e3b03d2266bcb76c4bcc37a7d71d9cb67838bb # v2.2.0
+      with:
+        name: ${{ env.PROJECT_NAME }}-iam-role
+        template: aws/iam-role.yml
+        fail-on-empty-changeset: false
+        capabilities: CAPABILITY_NAMED_IAM
+        parameter-overrides: >-
+          ProjectName=${{needs.prepare.outputs.project_name}} }}
+          RoleName=${{ needs.prepare.outputs.project_name }}-lambda-execution
+        tags: '[{"Key":"Project","Value":"${{ needs.prepare.outputs.project_name }}"}]'
