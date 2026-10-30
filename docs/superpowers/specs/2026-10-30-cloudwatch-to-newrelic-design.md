@@ -126,8 +126,9 @@ Own CloudFormation template (e.g. `aws/firehose.yml`), deployed via the reusable
 
 - `AWS::KinesisFirehose::DeliveryStream`, type `DirectPut`, `HttpEndpointDestinationConfiguration`:
   - endpoint URL = New Relic **EU** Firehose logs endpoint (the New Relic account is in the EU data
-    centre; believed to be `https://aws-api.eu01.nr-data.net/firehose/v1` — confirm against New Relic
-    docs). Template parameter with the EU URL as default.
+    centre): `https://aws-api.eu.newrelic.com/firehose/v1` (verified in New Relic docs). Template
+    parameter with the EU URL as default. New Relic recommends GZIP content encoding and a 1 MiB
+    buffer (1 MB per-request cap).
   - authentication via `EndpointConfiguration.AccessKey` =
     `{{resolve:ssm:/newrelic/licence-keys/cloudwatch-to-newrelic}}`. The parameter
     (`arn:aws:ssm:eu-central-1:233927217152:parameter/newrelic/licence-keys/cloudwatch-to-newrelic`)
@@ -188,6 +189,6 @@ The repo is currently a template skeleton (empty handler, leftover "consumer"/"S
 
 ## Left to the builder
 
-- New Relic payload envelope (verify first, see above).
+- New Relic payload envelope (verify first, see above — plan Task 1 is a spike for this).
 - Firehose buffering/retry values, Lambda timeout/memory, bucket retention.
 - Module layout inside `app/`.
