@@ -22,15 +22,19 @@ def function_name_from_log_group(log_group: str) -> str:
 def _parse_json_object(message: str) -> dict[str, Any] | None:
     try:
         parsed = json.loads(message)
-    except json.JSONDecodeError:
+    # ValueError covers JSONDecodeError and int literals over sys.get_int_max_str_digits()
+    except ValueError:
         return None
     return parsed if isinstance(parsed, dict) else None
 
 
-def _from_powertools(line: dict[str, Any], log_group: str) -> LogEntry:
-    message = line.get("message")
+def _from_powertools(line: dict[str, Any], raw: str, log_group: str) -> LogEntry:
     entry: LogEntry = {key: value for key, value in line.items() if key not in _CONSUMED_KEYS}
-    entry["message"] = message if isinstance(message, str) else json.dumps(message)
+    if "message" not in line:
+        entry["message"] = raw.rstrip("\n")
+    else:
+        message = line["message"]
+        entry["message"] = message if isinstance(message, str) else json.dumps(message)
     entry["functionName"] = line.get("function_name") or function_name_from_log_group(log_group)
     if level := line.get("level"):
         entry["level"] = level
@@ -51,7 +55,11 @@ def _from_plain_line(message: str, log_group: str) -> LogEntry:
 
 def build_entry(event: LogEvent, log_group: str, log_stream: str) -> LogEntry:
     line = _parse_json_object(event.message)
-    entry = _from_powertools(line, log_group) if line is not None else _from_plain_line(event.message, log_group)
+    entry = (
+        _from_powertools(line, event.message, log_group)
+        if line is not None
+        else _from_plain_line(event.message, log_group)
+    )
     entry["timestamp"] = event.timestamp
     entry["environment"] = ENVIRONMENT
     entry["logGroup"] = log_group

@@ -74,3 +74,16 @@ def test_invalid_base64_fails(make_record: Callable[..., FirehoseRecord]) -> Non
     rec = make_record(payload()).model_copy(update={"data": "not base64!"})
 
     assert transform_record(rec)["result"] == "ProcessingFailed"
+
+
+def test_unexpected_error_in_one_record_fails_only_that_record(
+    make_record: Callable[..., FirehoseRecord],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def boom(*_args: object) -> None:
+        raise RuntimeError
+
+    monkeypatch.setattr("app.transform.build_entry", boom)
+    rec = make_record(payload())
+
+    assert transform_record(rec) == {"recordId": "r1", "result": "ProcessingFailed", "data": rec.data}

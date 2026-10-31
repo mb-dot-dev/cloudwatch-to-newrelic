@@ -59,5 +59,11 @@ def transform_record(record: FirehoseRecord) -> dict[str, str]:
     ):
         return _result(record, "Dropped")
 
-    entries = [build_entry(event, payload.log_group, payload.log_stream) for event in payload.log_events]
-    return _result(record, "Ok", base64.b64encode(encode_entries(entries, payload)).decode())
+    # One bad record must never fail the whole Firehose batch
+    try:
+        entries = [build_entry(event, payload.log_group, payload.log_stream) for event in payload.log_events]
+        data = base64.b64encode(encode_entries(entries, payload)).decode()
+    except Exception:
+        logger.exception("Failed to transform record", extra={"recordId": record.record_id})
+        return _result(record, "ProcessingFailed")
+    return _result(record, "Ok", data)

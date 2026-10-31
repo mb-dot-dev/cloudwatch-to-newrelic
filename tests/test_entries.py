@@ -94,3 +94,24 @@ def test_plain_line_without_request_id() -> None:
 @pytest.mark.parametrize("line", ['"hello"', "42", "[1, 2]", "{not json"])
 def test_json_non_object_is_plain_line(line: str) -> None:
     assert build_entry(ev(line), LOG_GROUP, STREAM)["message"] == line
+
+
+def test_json_object_without_message_uses_raw_line() -> None:
+    line = '{"type": "platform.start", "record": {"requestId": "r"}}'
+
+    entry = build_entry(ev(line), LOG_GROUP, STREAM)
+
+    assert entry["message"] == line
+    assert entry["type"] == "platform.start"
+
+
+def test_powertools_list_message_is_stringified() -> None:
+    entry = build_entry(ev(json.dumps({"level": "INFO", "message": [1, "x"]})), LOG_GROUP, STREAM)
+
+    assert entry["message"] == '[1, "x"]'
+
+
+def test_oversized_json_number_is_plain_line() -> None:
+    line = '{"a": ' + "9" * 5000 + "}"
+
+    assert build_entry(ev(line), LOG_GROUP, STREAM)["message"] == line
