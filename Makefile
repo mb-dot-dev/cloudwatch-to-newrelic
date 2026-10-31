@@ -53,7 +53,7 @@ install-pip-ci: requirements
 		--no-installer-metadata \
 		--no-compile-bytecode \
 		--python-platform x86_64-manylinux2014 \
-		--python 3.14 \
+		--python "$$(cat .python-version)" \
 		--target build \
 		-r requirements.txt
 
