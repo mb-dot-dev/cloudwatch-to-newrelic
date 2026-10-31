@@ -1,0 +1,212 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Firehose stream forwarding all Lambda CloudWatch Logs in the account to New Relic
+
+Parameters:
+  ProjectName:
+    Type: String
+    Description: Name of the project
+  ProcessorFunctionArn:
+    Type: String
+    Description: ARN of the Lambda function that transforms Firehose records
+  NewRelicEndpointUrl:
+    Type: String
+    Description: New Relic Firehose logs endpoint (EU data centre)
+    Default: https://aws-api.eu.newrelic.com/firehose/v1
+
+Outputs:
+  DeliveryStreamArn:
+    Description: ARN of the Firehose delivery stream
+    Value: !GetAtt DeliveryStream.Arn
+
+Resources:
+  ########################################################
+  # Backup bucket for records that fail transformation or delivery
+  ########################################################
+  BackupBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireFailedRecords
+            Status: Enabled
+            ExpirationInDays: 30
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Name
+          Value: !Sub "${ProjectName}-backup"
+
+  ########################################################
+  # Firehose error logging (excluded from the subscription policy)
+  ########################################################
+  FirehoseErrorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/kinesisfirehose/${ProjectName}"
+      RetentionInDays: 30
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Name
+          Value: !Sub "/aws/kinesisfirehose/${ProjectName}"
+
+  FirehoseErrorLogStream:
+    Type: AWS::Logs::LogStream
+    Properties:
+      LogGroupName: !Ref FirehoseErrorLogGroup
+      LogStreamName: HttpDelivery
+
+  ########################################################
+  # IAM role for Firehose: invoke processor, write backups, log errors
+  ########################################################
+  DeliveryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: FirehoseDelivery
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                  - lambda:GetFunctionConfiguration
+                Resource: !Ref ProcessorFunctionArn
+              - Effect: Allow
+                Action:
+                  - s3:AbortMultipartUpload
+                  - s3:GetBucketLocation
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:ListBucketMultipartUploads
+                  - s3:PutObject
+                Resource:
+                  - !GetAtt BackupBucket.Arn
+                  - !Sub "${BackupBucket.Arn}/*"
+              - Effect: Allow
+                Action: logs:PutLogEvents
+                Resource: !GetAtt FirehoseErrorLogGroup.Arn
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Name
+          Value: !Sub "${ProjectName}-firehose-delivery"
+
+  ########################################################
+  # Firehose delivery stream -> New Relic
+  ########################################################
+  DeliveryStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamName: !Ref ProjectName
+      DeliveryStreamType: DirectPut
+      HttpEndpointDestinationConfiguration:
+        EndpointConfiguration:
+          Name: NewRelic
+          Url: !Ref NewRelicEndpointUrl
+          AccessKey: "{{resolve:ssm:/newrelic/licence-keys/cloudwatch-to-newrelic}}"
+        RequestConfiguration:
+          ContentEncoding: GZIP
+        # New Relic rejects requests over 1 MB
+        BufferingHints:
+          SizeInMBs: 1
+          IntervalInSeconds: 60
+        RetryOptions:
+          DurationInSeconds: 60
+        RoleARN: !GetAtt DeliveryRole.Arn
+        ProcessingConfiguration:
+          Enabled: true
+          Processors:
+            # Unverified with HTTP endpoint destinations; the processor Lambda also gunzips as a fallback
+            - Type: Decompression
+              Parameters:
+                - ParameterName: CompressionFormat
+                  ParameterValue: GZIP
+            - Type: Lambda
+              Parameters:
+                - ParameterName: LambdaArn
+                  ParameterValue: !Ref ProcessorFunctionArn
+                - ParameterName: BufferSizeInMBs
+                  ParameterValue: "1"
+                - ParameterName: BufferIntervalInSeconds
+                  ParameterValue: "60"
+        S3BackupMode: FailedDataOnly
+        S3Configuration:
+          BucketARN: !GetAtt BackupBucket.Arn
+          RoleARN: !GetAtt DeliveryRole.Arn
+          Prefix: failed/
+          ErrorOutputPrefix: errors/
+          CompressionFormat: GZIP
+        CloudWatchLoggingOptions:
+          Enabled: true
+          LogGroupName: !Ref FirehoseErrorLogGroup
+          LogStreamName: !Ref FirehoseErrorLogStream
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Name
+          Value: !Ref ProjectName
+
+  ########################################################
+  # IAM role for CloudWatch Logs to push to Firehose
+  ########################################################
+  LogsToFirehoseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: logs.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringLike:
+                aws:SourceArn: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
+      Policies:
+        - PolicyName: AllowCWLPutToFirehose
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - firehose:PutRecord
+                  - firehose:PutRecordBatch
+                Resource: !GetAtt DeliveryStream.Arn
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Name
+          Value: !Sub "${ProjectName}-logs-to-firehose"
+
+  ########################################################
+  # Account-wide subscription: every log group except our own
+  ########################################################
+  SubscriptionPolicy:
+    Type: AWS::Logs::AccountPolicy
+    Properties:
+      PolicyName: !Ref ProjectName
+      PolicyType: SUBSCRIPTION_FILTER_POLICY
+      Scope: ALL
+      PolicyDocument: !Sub |
+        {"DestinationArn": "${DeliveryStream.Arn}", "RoleArn": "${LogsToFirehoseRole.Arn}", "FilterPattern": "", "Distribution": "Random"}
+      SelectionCriteria: !Sub 'LogGroupName NOT IN ["/aws/lambda/${ProjectName}", "/aws/kinesisfirehose/${ProjectName}"]'
