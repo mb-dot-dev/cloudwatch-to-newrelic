@@ -120,6 +120,14 @@ array vs. newline-delimited JSON vs. a `{"logs": [...]}` wrapper, and attribute 
 `timestamp` units) **must be verified against New Relic's docs or with a quick real send before writing
 the encoder**. The attribute set above is fixed; the envelope is left to the builder.
 
+**Envelope (decided by spike, 2026-10-31):** each output record is a **gzipped CloudWatch-shaped
+payload** (`messageType`, `owner`, `logGroup`, `logStream`, `subscriptionFilters` copied from the
+input; `logEvents[i] = {"id", "timestamp", "message": json.dumps(entry)}`). New Relic's Firehose
+endpoint splits it into one log per event and lifts the JSON message's keys to top-level attributes,
+honouring `timestamp`. Newline-delimited JSON was rejected: New Relic kept only the first line of each
+record. Side effect: New Relic also adds `messageType`, `id`, `owner`, `subscriptionFilters` as
+attributes.
+
 The processor uses Powertools `Logger` for its own logging (consistent with other projects), but those
 logs are excluded from forwarding. It needs no secrets and no runtime config — no `mb-config`.
 
