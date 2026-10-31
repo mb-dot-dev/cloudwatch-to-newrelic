@@ -1,0 +1,9 @@
+version = 0.1
+
+[default.deploy.parameters]
+region = "eu-central-1"
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = false
+resolve_s3 = false 
+s3_bucket = "molnarbence-prod-lambda-code"
+fail_on_empty_changeset = false

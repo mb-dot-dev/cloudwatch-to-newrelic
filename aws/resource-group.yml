@@ -1,0 +1,35 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Resource group stack'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Description: The name of the project to which this application belongs.
+
+Outputs:
+  ResourceGroupArn:
+    Description: The ARN of the tag-based resource group containing the application's resources.
+    Value: !GetAtt ApplicationResourceGroup.Arn
+
+Resources:
+  # Tag-based resource group: every resource tagged Project=<ProjectName>
+  # automatically shows up in this group in the AWS Resource Groups console.
+  ApplicationResourceGroup:
+    Type: AWS::ResourceGroups::Group
+    Properties:
+      Name: !Ref ProjectName
+      Description: "Application resource group managed via CloudFormation and visible in AWS Resource Groups."
+      ResourceQuery:
+        Type: TAG_FILTERS_1_0
+        Query:
+          ResourceTypeFilters:
+            - AWS::AllSupported
+          TagFilters:
+            - Key: Project
+              Values:
+                - !Ref ProjectName
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Name
+          Value: !Ref ProjectName

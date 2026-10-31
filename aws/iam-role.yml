@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: IAM role for the consumer Lambda function
+Description: IAM role for the processor Lambda function
 
 Parameters:
   ProjectName:
@@ -7,11 +7,11 @@ Parameters:
     Description: Name of the project
   RoleName:
     Type: String
-    Description: Name of the IAM role for the consumer Lambda function
+    Description: Name of the IAM role for the processor Lambda function
 
 Outputs:
   LambdaExecutionRoleArn:
-    Description: ARN of the consumer Lambda execution role
+    Description: ARN of the processor Lambda execution role
     Value: !GetAtt LambdaExecutionRole.Arn
 
 Resources:
@@ -31,3 +31,5 @@ Resources:
       Tags:
         - Key: Project
           Value: !Ref ProjectName
+        - Key: Name
+          Value: !Ref RoleName

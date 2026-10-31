@@ -1,0 +1,53 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Firehose transformation Lambda that reshapes CloudWatch Logs for New Relic
+
+Parameters:
+  ProjectName:
+    Type: String
+    Description: Name of the project
+  FunctionName:
+    Type: String
+    Description: Name of the processor Lambda function
+  LambdaExecutionRoleArn:
+    Type: String
+    Description: ARN of the existing IAM role for the processor Lambda execution
+
+Outputs:
+  FunctionArn:
+    Description: ARN of the processor Lambda function
+    Value: !GetAtt Function.Arn
+
+  FunctionName:
+    Description: Name of the processor Lambda function
+    Value: !Ref FunctionName
+
+Resources:
+  Function:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Ref FunctionName
+      Runtime: python3.15
+      Handler: app.main.lambda_handler
+      CodeUri: lambda.zip
+      Role: !Ref LambdaExecutionRoleArn
+      Timeout: 60
+      MemorySize: 128
+      Environment:
+        Variables:
+          POWERTOOLS_SERVICE_NAME: !Ref FunctionName
+          POWERTOOLS_LOG_LEVEL: INFO
+      Tags:
+        Project: !Ref ProjectName
+        Name: !Ref FunctionName
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${FunctionName}"
+      RetentionInDays: 30
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Name
+          Value: !Sub "/aws/lambda/${FunctionName}"
