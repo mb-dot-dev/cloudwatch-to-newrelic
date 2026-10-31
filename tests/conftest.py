@@ -1,7 +1,7 @@
 import base64
 import gzip
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
@@ -9,6 +9,8 @@ from app.models import FirehoseRecord
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from aws_lambda_powertools.utilities.typing import LambdaContext as PowertoolsLambdaContext
 
 REQUEST_ID = "8f507cfc-1234-4abc-9def-0123456789ab"
 
@@ -41,8 +43,8 @@ class LambdaContext:
 
 
 @pytest.fixture
-def lambda_context() -> LambdaContext:
-    return LambdaContext()
+def lambda_context() -> PowertoolsLambdaContext:
+    return cast("PowertoolsLambdaContext", LambdaContext())
 
 
 @pytest.fixture

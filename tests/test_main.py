@@ -6,8 +6,9 @@ from tests.conftest import payload
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from aws_lambda_powertools.utilities.typing import LambdaContext
+
     from app.models import FirehoseRecord
-    from tests.conftest import LambdaContext
 
 
 def test_handler_processes_each_record_independently(
