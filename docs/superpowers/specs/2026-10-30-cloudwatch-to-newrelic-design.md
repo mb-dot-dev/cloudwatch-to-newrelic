@@ -82,11 +82,11 @@ S3 backup bucket
 ### Processor Lambda behaviour
 
 Input: a Firehose transformation event. Each record's `data` is base64 of a CloudWatch Logs
-subscription payload (`messageType`, `logGroup`, `logStream`, `logEvents[]`). Firehose's built-in
-`Decompression` processor runs before the Lambda, so the payload normally arrives already gunzipped;
-the Lambda still gunzips when it sees the gzip magic bytes, as a fallback in case decompression isn't
-supported with an HTTP endpoint destination (unverified in AWS docs). Event and payload are validated
-with pydantic models. (Patterns borrowed from `sox-suite-data-retention-stacks-main`.)
+subscription payload (`messageType`, `logGroup`, `logStream`, `logEvents[]`), gzipped. Firehose's
+built-in `Decompression` processor can't be used: AWS rejects it for HTTP endpoint destinations
+("only supported for destination type S3, Splunk and Snowflake", first deploy 2026-10-31), so the
+Lambda gunzips. Event and payload are validated with pydantic models. (Patterns borrowed from
+`sox-suite-data-retention-stacks-main`.)
 
 Per record:
 

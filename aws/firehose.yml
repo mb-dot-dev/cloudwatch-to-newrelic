@@ -136,11 +136,7 @@ Resources:
         ProcessingConfiguration:
           Enabled: true
           Processors:
-            # Unverified with HTTP endpoint destinations; the processor Lambda also gunzips as a fallback
-            - Type: Decompression
-              Parameters:
-                - ParameterName: CompressionFormat
-                  ParameterValue: GZIP
+            # Decompression processor isn't supported for HTTP endpoints; the Lambda gunzips CloudWatch payloads
             - Type: Lambda
               Parameters:
                 - ParameterName: LambdaArn

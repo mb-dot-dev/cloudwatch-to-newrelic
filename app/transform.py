@@ -35,7 +35,7 @@ def encode_entries(entries: list[LogEntry], payload: CloudWatchPayload) -> bytes
 
 def _decode_payload(data: str) -> CloudWatchPayload:
     raw = base64.b64decode(data, validate=True)
-    # Firehose's Decompression processor normally gunzips first; handle the case where it didn't
+    # CloudWatch Logs subscription payloads arrive gzipped (Firehose can't decompress for HTTP endpoints)
     if raw.startswith(GZIP_MAGIC):
         raw = gzip.decompress(raw)
     return CloudWatchPayload.model_validate_json(raw)
