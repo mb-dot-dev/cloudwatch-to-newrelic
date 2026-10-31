@@ -81,12 +81,16 @@ S3 backup bucket
 
 ### Processor Lambda behaviour
 
-Input: a Firehose transformation event. Each record's `data` is base64 of a gzipped CloudWatch Logs
-subscription payload (`messageType`, `logGroup`, `logStream`, `logEvents[]`).
+Input: a Firehose transformation event. Each record's `data` is base64 of a CloudWatch Logs
+subscription payload (`messageType`, `logGroup`, `logStream`, `logEvents[]`). Firehose's built-in
+`Decompression` processor runs before the Lambda, so the payload normally arrives already gunzipped;
+the Lambda still gunzips when it sees the gzip magic bytes, as a fallback in case decompression isn't
+supported with an HTTP endpoint destination (unverified in AWS docs). Event and payload are validated
+with pydantic models. (Patterns borrowed from `sox-suite-data-retention-stacks-main`.)
 
 Per record:
 
-1. Base64-decode, gunzip, parse JSON.
+1. Base64-decode, gunzip if still gzipped, validate/parse JSON.
 2. `messageType == "CONTROL_MESSAGE"` → result `Dropped`.
 3. `logGroup` not under `/aws/lambda/` → result `Dropped`.
 4. For each `logEvents[]` item, build one New Relic log entry:

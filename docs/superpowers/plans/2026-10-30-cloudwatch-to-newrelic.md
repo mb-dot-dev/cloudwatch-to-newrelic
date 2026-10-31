@@ -5,14 +5,20 @@
 **Goal:** Forward every Lambda log line in the account to New Relic as a structured entry, via an
 account-wide subscription → Firehose → processor Lambda (this repo) → New Relic EU endpoint.
 
-**Architecture:** A pure-Python processor (`app/`) turns each Firehose transformation record (gzipped
-CloudWatch Logs payload) into New Relic log entries. Four CloudFormation stacks: resource group, IAM
+**Architecture:** A pure-Python processor (`app/`) turns each Firehose transformation record (CloudWatch
+Logs payload, already decompressed by Firehose's built-in `Decompression` processor) into New Relic log
+entries. Four CloudFormation stacks: resource group, IAM
 role, Lambda (SAM, via reusable `deploy-lambda`), and Firehose (stream, S3 backup, roles, account
 subscription policy). CI/CD uses `mb-dot-dev/reusable-workflows`, mirroring
 `helsinki-api-gateway-rest-api`.
 
-**Tech Stack:** Python 3.15, uv, aws-lambda-powertools (Logger), pytest, ruff, ty, SAM/CloudFormation,
-cfn-lint, GitHub Actions.
+**Tech Stack:** Python 3.15, uv, aws-lambda-powertools (Logger), pydantic (event validation), pytest,
+ruff, ty, SAM/CloudFormation, cfn-lint, GitHub Actions.
+
+**Second reference:** `/Users/bence/repos/local/sox-suite-data-retention-stacks-main` —
+`cloudformation/firehose.yml` (Decompression + Lambda processors, role shapes) and
+`firehose_lambda/main.py` (pydantic-validated event, specific exception handling, newline-joined
+output). Borrow its patterns; don't copy its S3/Glue/dynamic-partitioning parts.
 
 **Spec:** `docs/superpowers/specs/2026-10-30-cloudwatch-to-newrelic-design.md`
 
@@ -48,7 +54,7 @@ cfn-lint, GitHub Actions.
    ms). → Task 2 test `test_canonical_keys_win_over_passthrough`.
 4. A `DATA_MESSAGE` with an empty `logEvents` list — expect `Dropped`, not an empty `Ok` record.
    → Task 3 test `test_empty_log_events_dropped`.
-5. A record that isn't gzip at all (someone `PutRecord`s directly to the stream) — expect
+5. A record that isn't a valid CloudWatch payload (bad JSON, missing fields) — expect
    `ProcessingFailed` for that record only, original data returned. → Task 3 test
    `test_corrupt_record_fails_alone`.
 
@@ -128,33 +134,41 @@ Bring the skeleton in line with helsinki and implement the pure mapping from one
 to one New Relic entry.
 
 **Files:**
-- Modify: `pyproject.toml` — `requires-python = ">=3.15"`; `dependencies = ["aws-lambda-powertools>=3.31.1"]`;
+- Modify: `pyproject.toml` — `requires-python = ">=3.15"`;
+  `dependencies = ["aws-lambda-powertools>=3.31.1", "pydantic>=2.13.4"]`;
   dev group as helsinki minus `moto[sqs]`; add `pythonpath = ["."]` to pytest options; copy helsinki's
   `[tool.ruff*]` sections verbatim (drop helsinki's Powertools-metrics `filterwarnings`). Set
   `description`. Regenerate `uv.lock` with `uv lock`.
 - Create: `.python-version` (`3.15`), `.github/dependabot.yml` (copy from helsinki),
   `sonar-project.properties` (copy from helsinki, `sonar.projectKey=mb-dot-dev_cloudwatch-to-newrelic`).
 - Modify: `Makefile` — `--python "$$(cat .python-version)"` in `install-pip-ci` (as helsinki).
-- Create: `app/entries.py`
+- Create: `app/models.py`, `app/entries.py`
 - Create: `tests/__init__.py` (empty), `tests/test_entries.py`
 
 **Interfaces:**
+- Produces (`app/models.py`) — pydantic models with camelCase aliases (as in the second reference's
+  `firehose_lambda/models.py`), `populate_by_name=True`:
+  - `LogEvent(id: str, timestamp: int, message: str)`
+  - `CloudWatchPayload(message_type: str ← "messageType", owner: str, log_group: str ← "logGroup",
+    log_stream: str ← "logStream", subscription_filters: list[str] ← "subscriptionFilters",
+    log_events: list[LogEvent] ← "logEvents")`
+  - `FirehoseRecord(record_id: str ← "recordId", data: str)`
+  - `FirehoseEvent(records: list[FirehoseRecord])` (ignore extra keys like `invocationId`)
 - Produces (`app/entries.py`):
   - `ENVIRONMENT: Final = "prod"`
   - `LogEntry = dict[str, Any]` (type alias)
   - `function_name_from_log_group(log_group: str) -> str` — `/aws/lambda/<name>` → `<name>`
-  - `build_entry(event: dict[str, Any], log_group: str, log_stream: str) -> LogEntry` — `event` is one
-    CloudWatch `logEvents[]` item (`id`, `timestamp`, `message`).
+  - `build_entry(event: LogEvent, log_group: str, log_stream: str) -> LogEntry`
 
 Mapping rules (from spec):
-- Powertools line = `event["message"]` parses (`json.loads`) to a `dict`:
+- Powertools line = `event.message` parses (`json.loads`) to a `dict`:
   - `message` ← its `message` (`json.dumps` if not a `str`); `level` ← `level`;
     `requestId` ← `function_request_id`; `functionName` ← `function_name`, else from log group.
   - every other key passed through, **except** the consumed keys `message`, `level`,
     `function_request_id`, `function_name`, `timestamp`.
 - Otherwise plain line: `message` ← raw line with trailing newline stripped; `functionName` from log
   group; `requestId` from regex `RequestId: ([0-9a-f-]{36})` when it matches; no `level` key.
-- Always: `timestamp` ← `event["timestamp"]`, `environment` ← `"prod"`, `logGroup`, `logStream`.
+- Always: `timestamp` ← `event.timestamp`, `environment` ← `"prod"`, `logGroup`, `logStream`.
   Canonical keys are written **after** passthrough so they win. Omit `requestId`/`level` keys when
   there's no value (don't emit `None`).
 
@@ -167,8 +181,8 @@ Mapping rules (from spec):
 LOG_GROUP = "/aws/lambda/helsinki"
 STREAM = "2026/10/30/[$LATEST]abc"
 
-def ev(message: str, ts: int = 1_761_800_000_000) -> dict:
-    return {"id": "1", "timestamp": ts, "message": message}
+def ev(message: str, ts: int = 1_761_800_000_000) -> LogEvent:
+    return LogEvent(id="1", timestamp=ts, message=message)
 
 def test_function_name_from_log_group():
     assert function_name_from_log_group("/aws/lambda/helsinki") == "helsinki"
@@ -214,9 +228,9 @@ def test_json_non_object_is_plain_line(line):
 - [ ] **Step 3: Run to verify failure**
 
 Run: `uv run pytest tests/test_entries.py`
-Expected: FAIL — `ModuleNotFoundError: No module named 'app.entries'`
+Expected: FAIL — `ModuleNotFoundError` for `app.models` / `app.entries`
 
-- [ ] **Step 4: Implement `app/entries.py`** per the Interfaces and mapping rules above.
+- [ ] **Step 4: Implement `app/models.py` and `app/entries.py`** per the Interfaces and mapping rules above.
 
 - [ ] **Step 5: Run tests and lint**
 
@@ -240,28 +254,34 @@ git commit -m "feat: align project with helsinki and map CloudWatch events to Ne
 - Create: `tests/conftest.py`, `tests/test_transform.py`, `tests/test_main.py`
 
 **Interfaces:**
-- Consumes: `build_entry`, `LogEntry` from Task 2.
+- Consumes: `build_entry`, `LogEntry`, `LogEvent`, `CloudWatchPayload`, `FirehoseRecord`,
+  `FirehoseEvent` from Task 2.
 - Produces (`app/transform.py`):
-  - `encode_entries(entries: list[LogEntry], payload: dict[str, Any]) -> bytes` — the envelope chosen
+  - `encode_entries(entries: list[LogEntry], payload: CloudWatchPayload) -> bytes` — the envelope chosen
     in Task 1. A: `"\n".join(json.dumps(e) for e in entries)` encoded UTF-8. B: gzipped CloudWatch-shaped
     JSON copying `messageType`, `owner`, `logGroup`, `logStream`, `subscriptionFilters` from `payload`,
     with `logEvents[i] = {"id": <original id>, "timestamp": entry["timestamp"], "message": json.dumps(entry)}`.
-  - `transform_record(record: dict[str, Any]) -> dict[str, str]` — input is one Firehose record
-    (`recordId`, `data` base64); returns `{"recordId", "result", "data"}` with `result` in
-    `"Ok" | "Dropped" | "ProcessingFailed"`.
+  - `transform_record(record: FirehoseRecord) -> dict[str, str]` — returns
+    `{"recordId", "result", "data"}` with `result` in `"Ok" | "Dropped" | "ProcessingFailed"`.
 - Produces (`app/main.py`): `lambda_handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]`
-  returning `{"records": [transform_record(r) for r in event["records"]]}`; module-level
-  `logger = Logger()`; decorated with `@logger.inject_lambda_context` (as helsinki).
-- Produces (`tests/conftest.py`): fixture `make_record` → `(payload: dict | bytes, record_id: str = "r1") -> dict`
-  (dict is JSON-dumped, gzipped, base64'd; bytes are base64'd as-is); `lambda_context` fixture (as helsinki).
+  validating with `FirehoseEvent.model_validate(event)` and returning
+  `{"records": [transform_record(r) for r in validated.records]}`; module-level `logger = Logger()`;
+  decorated with `@logger.inject_lambda_context` (as helsinki).
+- Produces (`tests/conftest.py`): fixture `make_record` →
+  `(payload: dict | bytes, record_id: str = "r1", *, gzipped: bool = False) -> FirehoseRecord`
+  (dict is JSON-dumped; `gzipped=True` gzips; then base64'd; bytes are base64'd as-is); the same
+  record as a raw dict is `record.model_dump(by_alias=True)`; `lambda_context` fixture (as helsinki).
 
 `transform_record` rules, in order:
-1. Decode base64 → gunzip → `json.loads`. Any exception → `ProcessingFailed`, `data` = original input
-   data; log it with `logger.exception` including `recordId`.
-2. `messageType == "CONTROL_MESSAGE"` → `Dropped`.
-3. `logGroup` not starting with `/aws/lambda/` → `Dropped`.
-4. Empty `logEvents` → `Dropped`.
-5. Else `Ok`, `data` = base64 of `encode_entries([build_entry(e, logGroup, logStream) for e in logEvents], payload)`.
+1. Base64-decode. If the bytes start with the gzip magic `b"\x1f\x8b"`, gunzip them (fallback for when
+   Firehose decompression isn't active — see Task 5). Parse with
+   `CloudWatchPayload.model_validate_json`. Catch only `binascii.Error`, `gzip.BadGzipFile`, `EOFError`,
+   `UnicodeDecodeError`, `pydantic.ValidationError` (ruff `BLE` forbids blind excepts) →
+   `ProcessingFailed`, `data` = original input data; `logger.exception(..., extra={"recordId": ...})`.
+2. `message_type == "CONTROL_MESSAGE"` → `Dropped`.
+3. `log_group` not starting with `/aws/lambda/` → `Dropped`.
+4. Empty `log_events` → `Dropped`.
+5. Else `Ok`, `data` = base64 of `encode_entries([build_entry(e, log_group, log_stream) for e in log_events], payload)`.
 
 For `Dropped`/`ProcessingFailed`, return the original `data` unchanged.
 
@@ -279,8 +299,9 @@ def decoded_entries(result) -> list[dict]:
     """Decode result['data'] back to entries for the envelope chosen in Task 1."""
     ...  # A: split lines + json.loads; B: gunzip, json.loads, json.loads each logEvents[].message
 
-def test_ok_record_has_one_entry_per_event(make_record):
-    rec = make_record(payload())
+@pytest.mark.parametrize("gzipped", [False, True])
+def test_ok_record_has_one_entry_per_event(make_record, gzipped):
+    rec = make_record(payload(), gzipped=gzipped)
     out = transform_record(rec)
     assert out["recordId"] == "r1" and out["result"] == "Ok"
     entries = decoded_entries(out)
@@ -289,7 +310,7 @@ def test_ok_record_has_one_entry_per_event(make_record):
 
 def test_control_message_dropped(make_record):
     rec = make_record(payload(message_type="CONTROL_MESSAGE"))
-    assert transform_record(rec) == {"recordId": "r1", "result": "Dropped", "data": rec["data"]}
+    assert transform_record(rec) == {"recordId": "r1", "result": "Dropped", "data": rec.data}
 
 def test_non_lambda_log_group_dropped(make_record):
     assert transform_record(make_record(payload(log_group="/aws/rds/x")))["result"] == "Dropped"
@@ -297,9 +318,10 @@ def test_non_lambda_log_group_dropped(make_record):
 def test_empty_log_events_dropped(make_record):
     assert transform_record(make_record(payload(events=[])))["result"] == "Dropped"
 
-def test_corrupt_record_fails_alone(make_record):
-    rec = make_record(b"not gzip")
-    assert transform_record(rec) == {"recordId": "r1", "result": "ProcessingFailed", "data": rec["data"]}
+@pytest.mark.parametrize("raw", [b"not json", b'{"messageType": "DATA_MESSAGE"}', b"\x1f\x8bbroken"])
+def test_corrupt_record_fails_alone(make_record, raw):
+    rec = make_record(raw)
+    assert transform_record(rec) == {"recordId": "r1", "result": "ProcessingFailed", "data": rec.data}
 ```
 
 And `tests/test_main.py`:
@@ -307,8 +329,9 @@ And `tests/test_main.py`:
 ```python
 def test_handler_processes_each_record_independently(make_record, lambda_context):
     event = {"invocationId": "i", "deliveryStreamArn": "arn", "region": "eu-central-1",
-             "records": [make_record(payload(), "a"), make_record(b"junk", "b"),
-                         make_record(payload(message_type="CONTROL_MESSAGE"), "c")]}
+             "records": [r.model_dump(by_alias=True) for r in (
+                 make_record(payload(), "a"), make_record(b"junk", "b"),
+                 make_record(payload(message_type="CONTROL_MESSAGE"), "c"))]}
     out = lambda_handler(event, lambda_context)
     assert [(r["recordId"], r["result"]) for r in out["records"]] == [
         ("a", "Ok"), ("b", "ProcessingFailed"), ("c", "Dropped")]
@@ -321,7 +344,9 @@ def test_handler_processes_each_record_independently(make_record, lambda_context
 Run: `uv run pytest tests/test_transform.py tests/test_main.py`
 Expected: FAIL — `ImportError` for `app.transform` / `lambda_handler`.
 
-- [ ] **Step 3: Implement `app/transform.py` and `app/main.py`** per Interfaces and rules.
+- [ ] **Step 3: Implement `app/transform.py` and `app/main.py`** per Interfaces and rules. Follow
+  the second reference's `firehose_lambda/main.py` shape: precompute the `ProcessingFailed` result per
+  record, one `try` around decode/validate, `"\n".join(...)` for envelope A.
 
 - [ ] **Step 4: Run all tests, lint, coverage**
 
@@ -410,8 +435,15 @@ Resources:
   - `RequestConfiguration.ContentEncoding: GZIP`
   - `BufferingHints`: `SizeInMBs: 1`, `IntervalInSeconds: 60` (New Relic docs: 1 MiB cap)
   - `RetryOptions.DurationInSeconds: 60`
-  - `ProcessingConfiguration`: enabled, one `Lambda` processor with `LambdaArn`,
-    `BufferSizeInMBs: 1`, `BufferIntervalInSeconds: 60`
+  - `ProcessingConfiguration`: enabled, processors in this order (as in the second reference's
+    `cloudformation/firehose.yml`):
+    1. `Decompression` with `CompressionFormat: GZIP`
+    2. `Lambda` with `LambdaArn`, `BufferSizeInMBs: 1`, `BufferIntervalInSeconds: 60`
+
+    AWS docs only confirm decompression for S3/Splunk-style pipelines; it's unverified with an HTTP
+    endpoint destination. If CloudFormation rejects it at deploy (Task 7), delete the `Decompression`
+    processor — the Lambda's gzip fallback (Task 3) keeps everything working. Side effect when it does
+    work: the stream rejects puts that don't come from CloudWatch Logs.
   - `S3BackupMode: FailedDataOnly`, `S3Configuration` → bucket, `RoleARN`, prefix `failed/`,
     `CompressionFormat: GZIP`
   - `CloudWatchLoggingOptions` → error log group / stream; `RoleARN: DeliveryRole`
